@@ -61,7 +61,12 @@ module RedactedCredentialDiff
       end
 
       def value_masks
-        values.to_h { |node| [ span_of(node), [ anchor_of(node), fingerprint(source_of(node)) ].compact.join(" ") ] }
+        values.to_h { |node| [ span_of(node), mask_of(node) ] }
+      end
+
+      # An anchor stays in front of its mask so that aliases to it still resolve.
+      def mask_of(node)
+        [ anchor_of(node), fingerprint(source_of(node)) ].compact.join(" ")
       end
 
       def comment_masks
@@ -92,9 +97,12 @@ module RedactedCredentialDiff
       # Comments can hold commented-out credentials, so they are masked too. A
       # "#" inside a scalar is part of that scalar, not a comment.
       def comments
-        @yaml.enum_for(:scan, COMMENT).map { Regexp.last_match.begin(0)...Regexp.last_match.end(0) }.reject do |comment|
-          scalar_spans.any? { |scalar| scalar.cover?(comment.begin) }
-        end
+        hash_runs.reject { |run| scalar_spans.any? { |scalar| scalar.cover?(run.begin) } }
+      end
+
+      # Every "#" through to the end of its line, comment or not.
+      def hash_runs
+        @yaml.enum_for(:scan, COMMENT).map { Regexp.last_match.begin(0)...Regexp.last_match.end(0) }
       end
 
       def scalar_spans

@@ -22,6 +22,9 @@ module RedactedCredentialDiff
       config/credentials.yml.enc diff=#{NAME}
     END
 
+    # A .gitattributes line assigning any diff driver to a credentials file.
+    ASSIGNMENT = %r{\Aconfig/credentials\S*\.yml\.enc\s+diff=}
+
     def initialize(root)
       @root = Pathname(root)
     end
@@ -43,10 +46,6 @@ module RedactedCredentialDiff
       gitattributes.write(unassigned_attributes + ATTRIBUTES)
     end
 
-    def enrolled?
-      gitattributes.file? && gitattributes.read.include?(ATTRIBUTES)
-    end
-
     private
       def checkout?
         @root.join(".git").exist?
@@ -56,7 +55,7 @@ module RedactedCredentialDiff
       def unassigned_attributes
         return "" unless gitattributes.file?
 
-        gitattributes.read.lines(chomp: true).grep_v(%r{\Aconfig/credentials\S*\.yml\.enc\s+diff=}).map { |line| "#{line}\n" }.join
+        gitattributes.read.lines(chomp: true).grep_v(ASSIGNMENT).map { |line| "#{line}\n" }.join
       end
 
       def gitattributes
