@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# End-to-end check against a real Rails app. Generates an app on the given
+# Rails release, enrolls it in Rails' own decrypting diff driver, then installs
+# this gem from the checkout and asserts that git stops printing credentials.
+#
+#   bin/e2e 8.1
+set -euo pipefail
+
+rails_version="${1:?usage: bin/e2e <rails minor version, e.g. 8.1>}"
+gem_root="$(cd "$(dirname "$0")/.." && pwd)"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# Isolated from the invoking user's gems, git config and Rails environment.
+export GEM_HOME="$work/gems" GEM_PATH="$work/gems" PATH="$work/gems/bin:$PATH"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_PAGER=cat
+export GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.com GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.com
+unset RAILS_MASTER_KEY RAILS_ENV BUNDLE_GEMFILE RUBYOPT VISUAL
+
+command="bundle exec redacted_credential_diff"
+
+fail() { echo "FAIL: $1" >&2; exit 1; }
+shows() { grep -q -- "$2" <<<"$1" || fail "$3"; }
+hides() { ! grep -q -- "$2" <<<"$1" || fail "$3"; }
+driver() { git config --get "diff.$1.textconv" || true; }
+
+# Replaces the credentials through `credentials:edit`, as a developer would.
+cat > "$work/editor" <<'SH'
+#!/bin/sh
+printf '%s\n' "$CREDENTIALS" > "$1"
+SH
+chmod +x "$work/editor"
+edit() { CREDENTIALS="$1" EDITOR="$work/editor" bin/rails credentials:edit "${@:2}" > /dev/null; }
+
+gem install rails --version "~> $rails_version.0" --no-document --silent
+# Loaded through ruby: the executable wrapper some RubyGems versions write
+# into a custom GEM_HOME points at a ruby that is not there.
+ruby -e 'load Gem.bin_path("railties", "rails")' new "$work/app" --minimal --skip-active-record --skip-bundle --quiet
+cd "$work/app"
+bundle install --quiet
+echo "Rails $(bundle exec rails runner 'print Rails.version'), Ruby $(ruby -e 'print RUBY_VERSION')"
+
+# A project as Rails leaves it: enrolled in the decrypting driver.
+bin/rails credentials:diff --enroll > /dev/null
+edit 'token: S3CR3T-one'
+git add -A && git commit -qm "Before the gem" && git branch before
+edit 'token: S3CR3T-two'
+shows "$(git diff)" "S3CR3T" "expected Rails' own driver to print credentials, so the remaining checks prove nothing"
+git commit -qam "Change a credential"
+
+# Add the gem and enroll.
+echo "gem \"redacted_credential_diff\", path: \"$gem_root\"" >> Gemfile
+bundle install --quiet
+bin/rails redacted_credential_diff:enroll > /dev/null
+[ "$(driver redacted_credentials)" = "$command" ] || fail "enroll did not define the redacted_credentials driver"
+[ "$(driver rails_credentials)" = "$command" ] || fail "enroll did not take over the rails_credentials driver"
+shows "$(cat .gitattributes)" "config/credentials.yml.enc diff=redacted_credentials" ".gitattributes was not enrolled"
+hides "$(cat .gitattributes)" "diff=rails_credentials" ".gitattributes still names Rails' driver"
+git add -A && git commit -qm "Add redacted_credential_diff"
+
+history="$(git log -p --all)"
+hides "$history" "S3CR3T" "git log -p prints credentials"
+shows "$history" "+token: <redacted [0-9a-f]\{8\}>" "git log -p does not show the redacted change"
+
+# Values, comments and keys with multibyte characters.
+edit 'token: S3CR3T-three
+pass: "日本語-S3CR3T-four" # café S3CR3T-five
+clé: S3CR3T-six'
+changes="$(git diff)"
+hides "$changes" "S3CR3T" "git diff prints credentials"
+shows "$changes" "+pass: <redacted [0-9a-f]\{8\}> # <redacted [0-9a-f]\{8\}>$" "git diff does not show the redacted multibyte change"
+shows "$changes" "+clé: <redacted [0-9a-f]\{8\}>$" "git diff does not keep a multibyte key"
+hides "$(git show HEAD:config/credentials.yml.enc --textconv)" "S3CR3T" "git show --textconv prints credentials"
+git commit -qam "Change credentials again"
+
+# An environment file with its own key.
+edit 'token: S3CR3T-qa' --environment qa
+git add -A
+staged="$(git diff --cached -- config/credentials)"
+hides "$staged" "S3CR3T" "git diff prints environment credentials"
+shows "$staged" "+token: <redacted [0-9a-f]\{8\}>" "git diff does not show the redacted environment credentials"
+git commit -qm "Add qa credentials"
+
+# A clone that has never defined the driver gets it when the app loads.
+git config --unset diff.redacted_credentials.textconv
+git config --unset diff.rails_credentials.textconv
+bin/rails runner 1
+[ "$(driver redacted_credentials)" = "$command" ] || fail "loading the app did not define the redacted_credentials driver"
+[ "$(driver rails_credentials)" = "$command" ] || fail "loading the app did not take over the rails_credentials driver"
+
+# `credentials:edit` in a project still enrolled with Rails must not install
+# the decrypting driver.
+git config --unset diff.redacted_credentials.textconv
+git config --unset diff.rails_credentials.textconv
+git checkout -q before -- .gitattributes
+EDITOR=true bin/rails credentials:edit > /dev/null
+[ "$(driver rails_credentials)" = "$command" ] || fail "credentials:edit installed Rails' decrypting driver"
+hides "$(git log -p --all)" "S3CR3T" "git log -p prints credentials while .gitattributes names Rails' driver"
+git checkout -q HEAD -- .gitattributes
+
+# A branch that predates the gem cannot run the command; git aborts the diff.
+git checkout -q before
+hides "$(git log -p --all 2>&1 || true)" "S3CR3T" "git log -p prints credentials on a branch that predates the gem"
+
+echo "PASS: Rails $rails_version"

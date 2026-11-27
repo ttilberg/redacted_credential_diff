@@ -58,6 +58,12 @@ class CredentialsFileTest < Minitest::Test
     assert_match(/\Apass: #{MASK} # #{MASK}\nclé: #{MASK}\n\z/, redacted("config/credentials.yml.enc"))
   end
 
+  def test_empty_credentials_are_not_mistaken_for_a_missing_key
+    encrypt "config/credentials.yml.enc", "", key: @master_key
+
+    assert_equal "", redacted("config/credentials.yml.enc")
+  end
+
   def test_returns_the_stored_file_without_a_key
     stored = encrypt("config/credentials.yml.enc", "token: hunter2\n", key: @master_key).read
     @root.join("config/master.key").delete

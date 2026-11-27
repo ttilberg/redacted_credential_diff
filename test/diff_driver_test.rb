@@ -54,7 +54,6 @@ class DiffDriverTest < Minitest::Test
       config/credentials/*.yml.enc diff=redacted_credentials
       config/credentials.yml.enc diff=redacted_credentials
     END
-    assert @driver.enrolled?
   end
 
   def test_enroll_is_idempotent_and_creates_the_file

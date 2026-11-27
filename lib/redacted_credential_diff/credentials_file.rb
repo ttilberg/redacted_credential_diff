@@ -16,9 +16,10 @@ module RedactedCredentialDiff
     end
 
     # The decrypted contents with values redacted. A file that cannot be
-    # decrypted is returned as stored, which is what git diffs with no driver.
+    # decrypted, for want of a key or of the right one, is returned as stored,
+    # which is what git diffs with no driver.
     def redacted
-      return stored if yaml.empty?
+      return stored unless encrypted.key
 
       Redaction.new(yaml, key: encrypted.key).to_s
     rescue ActiveSupport::MessageEncryptor::InvalidMessage

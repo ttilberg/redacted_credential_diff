@@ -25,6 +25,8 @@ git commit .gitattributes
 
 `enroll` is run once per project. Nothing is run per developer.
 
+Requires Rails 7.0 or later and Ruby 3.2 or later.
+
 ## How it works
 
 Git splits a diff driver into two parts.
@@ -46,6 +48,8 @@ Keys, nesting and line layout are kept. Every value and every comment is replace
 
 Comments are masked because credentials files commonly hold commented-out entries. Values are located by source position from the YAML parser, so multi-line and block scalars are masked in full. Content that does not parse as YAML is masked line by line.
 
+The result is checked before it is printed: it must parse to the same keys as the original and hold nothing but fingerprints. A result that fails the check is discarded and the file is masked line by line instead, without its keys.
+
 ### What each checkout shows
 
 | State of the checkout | `git diff` of a credentials file |
@@ -54,13 +58,25 @@ Comments are masked because credentials files commonly hold commented-out entrie
 | Fresh clone, app never loaded | Encrypted file as stored |
 | No encryption key available | Encrypted file as stored |
 | Branch that predates the gem | `fatal: unable to read files to diff` |
+| Clone already holding Rails' driver, app not loaded since the gem was added, on a branch that predates the gem | Decrypted |
 
-No state prints decrypted credentials. The last row holds because the Railtie also points Rails' `rails_credentials` driver at the redacting command; on a branch where that command does not exist, git aborts the diff. Having the driver defined also stops `bin/rails credentials:edit` from installing the decrypting one.
+Once the app has loaded in a checkout, none of its branches print decrypted credentials. The Railtie also points Rails' `rails_credentials` driver at the redacting command; on a branch where that command does not exist, git aborts the diff. Having the driver defined also stops `bin/rails credentials:edit` from installing the decrypting one.
+
+The last row is the gap: a clone that ran `credentials:edit` before the gem arrived keeps Rails' decrypting driver until the app next loads there, and that driver still applies on branches whose `.gitattributes` names it.
 
 ## Limits
 
 - This covers git's diff output only. `bin/rails credentials:show` and `credentials:edit` are unchanged.
 - `git diff --no-textconv` and hosted diff views bypass the driver and show the encrypted file.
+- Key names are printed. A file whose keys are themselves sensitive, such as a map keyed by customer, still shows them.
 - Identical values under different keys share a fingerprint.
+- Each side of a diff starts `bundle exec`, so `git log -p` across a long credentials history is slow.
 - A key kept at a custom `config.credentials.key_path` is not found, so those files diff as stored.
 - The command assumes the Gemfile is at the top of the git working tree, where git runs it.
+
+## Development
+
+```
+bundle exec rake test   # unit tests
+bin/e2e 8.1             # generates an app on that Rails release and checks what git prints
+```
